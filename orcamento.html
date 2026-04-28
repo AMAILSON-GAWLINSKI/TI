@@ -527,24 +527,39 @@
       }
     }
     
-    // Função para salvar atendentes no Supabase
+    // Função para salvar atendentes no Supabase (corrigida)
     async function salvarAtendentesNoSupabase() {
+      if (!navigator.onLine) {
+        localStorage.setItem('atendentes', JSON.stringify(atendentes));
+        return true;
+      }
       try {
-        if (!navigator.onLine) {
-          localStorage.setItem('atendentes', JSON.stringify(atendentes));
-          return true;
-        }
-        
-        for (const atendente of atendentes) {
+        // Sincroniza todos os atendentes com ID positivo (já existentes no Supabase)
+        const toUpsert = atendentes.filter(a => a.id > 0);
+        for (const atendente of toUpsert) {
           const { error } = await supabase
             .from('atendentes')
             .upsert(atendente, { onConflict: 'id' });
           if (error) throw error;
         }
+        // Atendentes com ID negativo (criados offline) devem ser inseridos sem ID
+        const toInsert = atendentes.filter(a => a.id < 0);
+        for (const atendente of toInsert) {
+          const { id, ...rest } = atendente;
+          const { data, error } = await supabase
+            .from('atendentes')
+            .insert(rest)
+            .select();
+          if (error) throw error;
+          if (data && data[0]) {
+            atendente.id = data[0].id; // atualiza ID real
+          }
+        }
         localStorage.setItem('atendentes', JSON.stringify(atendentes));
         return true;
       } catch (error) {
         console.error('Erro ao salvar atendentes no Supabase:', error);
+        alert('Erro de conexão com o banco. Dados salvos apenas localmente.');
         localStorage.setItem('atendentes', JSON.stringify(atendentes));
         return false;
       }
@@ -582,7 +597,7 @@
     }
     
     async function adicionarAtendenteComLogin(nome, email, login, senha) {
-      const novoId = Math.max(...atendentes.map(a => a.id), 0) + 1;
+      const novoId = Math.min(...atendentes.map(a => a.id), 0) - 1; // ID negativo
       const novoAtendente = {
         id: novoId,
         nome: nome,
@@ -629,7 +644,7 @@
     async function deletarAtendente(id) {
       atendentes = atendentes.filter(a => a.id !== id);
       
-      if (navigator.onLine) {
+      if (navigator.onLine && id > 0) {
         try {
           const { error } = await supabase.from('atendentes').delete().eq('id', id);
           if (error) throw error;
@@ -737,11 +752,6 @@
     const clientSource = document.getElementById('clientSource');
     const descontoGeralInput = document.getElementById('descontoGeralInput');
     let currentOrcamentoId = '';
-    
-    // Inicializar carregando atendentes do Supabase
-    carregarAtendentesDoSupabase().then(() => {
-      sincronizarAtendenteAtual();
-    });
     
     // Offline sync functions
     function updateOfflineIndicator() {
@@ -1072,12 +1082,13 @@
             const changeEvent = new Event('change', { bubbles: true });
             atendenteSelect.dispatchEvent(changeEvent);
             
-            if (validateStep1()) {
-              jaPassouStep1 = true;
-              setTimeout(() => {
+            // Pequeno atraso para garantir que o select já tenha as opções
+            setTimeout(() => {
+              if (validateStep1()) {
+                jaPassouStep1 = true;
                 goToStep(2);
-              }, 50);
-            }
+              }
+            }, 100);
             return true;
           }
           return false;
@@ -1836,16 +1847,22 @@ ${dataAtual}
     currentOrcamentoId = generateOrcamentoId();
     updateOrcamentoIdDisplay();
     
-    carregarHistoricoDoSupabase().then(() => {
+    // ========== INICIALIZAÇÃO CORRIGIDA ==========
+    // Aguarda carregamento de atendentes e histórico antes de verificar login
+    Promise.all([
+      carregarAtendentesDoSupabase(),
+      carregarHistoricoDoSupabase()
+    ]).then(() => {
+      sincronizarAtendenteAtual();
       const usuarioFoiPreenchido = verificarUsuarioLogado();
       if (!usuarioFoiPreenchido) {
         goToStep(1);
       } else {
         toggleAccessButtons();
       }
-    });
+    }).catch(err => console.error('Erro na inicialização:', err));
     
-    // ========== FUNÇÕES DE APOIO ==========
+    // ========== FUNÇÕES DE APOIO (Dashboard, Gestão, etc.) ==========
     
     function renderizarGestaoAtendentes(container) {
       if (!container) return;
@@ -1863,7 +1880,7 @@ ${dataAtual}
           <h4 style="margin-bottom: 15px; color: #1e293b;">📋 Atendentes Ativos</h4>
           <table class="atendentes-table">
             <thead>
-              <tr><th>Nome</th><th>E-mail</th><th>Login</th><th>Status</th><th>Acesso</th><th>Ações</th><tr>
+              <tr><th>Nome</th><th>E-mail</th><th>Login</th><th>Status</th><th>Acesso</th><th>Ações</th></tr>
             </thead>
             <tbody>
       `;
@@ -1991,7 +2008,6 @@ ${dataAtual}
           const nomeAtual = btn.dataset.nome;
           const emailAtual = btn.dataset.email;
           const loginAtual = btn.dataset.login;
-          const senhaAtual = atendentes.find(a => a.id === id)?.senha || '';
           const modal = document.createElement('div'); modal.className = 'modal-overlay';
           modal.innerHTML = `
             <div class="modal-content" style="max-width:450px;">
